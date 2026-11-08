@@ -242,8 +242,12 @@ class FixMarketDataClient(object):
 
         ``updates=True`` asks for snapshot plus full-refresh updates
         (``263=1``, ``265=0``). ``updates=False`` asks for one snapshot
-        (``263=0``). ``entries`` are pyRofex codes such as ``BI``, ``OF``,
-        ``LA`` or :class:`~pyRofex.components.enums.MarketDataEntry` values.
+        (``263=0``). ``entries`` are pyRofex codes or
+        :class:`~pyRofex.components.enums.MarketDataEntry` values:
+        ``BI`` ``OF`` ``LA`` (the usual book and last trade), and also
+        ``OP`` (269=4), ``CL`` (5), ``SE`` (6), ``HI`` (7), ``LO`` (8),
+        ``TV`` (B) and ``OI`` (C). A ``35=Y`` reject is delivered to the
+        message callback and that request is not sent again.
         """
         self._require_logged_on()
         if isinstance(symbols, str):
@@ -300,8 +304,6 @@ class FixMarketDataClient(object):
             raise ValueError("seconds must be positive")
         if on_message is not None:
             self.on_message = on_message
-            if self._session is not None:
-                self._session.on_message = on_message
         end = self.clock.monotonic() + seconds
         retries = 0
         while self.clock.monotonic() < end:
@@ -370,7 +372,7 @@ class FixMarketDataClient(object):
             transport,
             self.clock,
             reset_seq_num=self.reset_seq_num,
-            on_message=self.on_message,
+            on_message=self._deliver,
         )
         try:
             self._session.start()
@@ -381,7 +383,7 @@ class FixMarketDataClient(object):
 
     def _restore_subscriptions(self):
         for md_req_id, stored in list(self._subscriptions.items()):
-            if stored["subscription"] == "2":
+            if stored.get("rejected") or stored["subscription"] == "2":
                 continue
             self._session.send_market_data_request(
                 md_req_id,
@@ -391,6 +393,21 @@ class FixMarketDataClient(object):
                 stored["subscription"],
                 stored["aggregated"],
             )
+
+    def _deliver(self, record):
+        """Hand one inbound record to the caller.
+
+        A Market Data Request Reject (``35=Y``) is recorded on that
+        subscription and is not followed by another request.
+        """
+        parsed = record.get("parsed") or {}
+        if parsed.get("msg_type") == "Y":
+            stored = self._subscriptions.get(parsed.get("md_req_id"))
+            if stored is not None:
+                stored["rejected"] = True
+        callback = self.on_message
+        if callback is not None:
+            callback(record)
 
     def _require_logged_on(self):
         if self._session is None or self._session.state != "logged_on":

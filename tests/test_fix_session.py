@@ -283,6 +283,77 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(first(requests[1], 263), "2")
         self.assertEqual(first(requests[0], 262), first(requests[1], 262))
 
+    def test_reference_entries_and_reject_is_not_retried(self):
+        client, exchange, _clock = _logged_on()
+        md_req_id = client.subscribe(
+            "DLR/NOV26",
+            [MarketDataEntry.BIDS, "OF", "LA", MarketDataEntry.OPENING_PRICE,
+             "CL", "SE", "HI", "LO", "TV", "OI"],
+            depth=1,
+        )
+        requests = [pairs for pairs in frames_of(exchange.sent) if first(pairs, 35) == "V"]
+        self.assertEqual(
+            values(requests[-1], 269),
+            ["0", "1", "2", "4", "5", "6", "7", "8", "B", "C"],
+        )
+        seen = []
+        client.on_message = seen.append
+        exchange.push(frame(
+            "Y",
+            [(262, md_req_id), (281, "8"), (58, "Unsupported MDEntryType")],
+            3,
+            "ROFX",
+            "demo-user",
+        ))
+        client._session.pump()
+        client._session.pump()
+        reject = seen[-1]["parsed"]
+        self.assertEqual(reject["msg_type"], "Y")
+        self.assertEqual(reject["md_req_rej_reason"], "8")
+        self.assertEqual(reject["md_req_rej_reason_name"], "UNSUPPORTED_MD_ENTRY_TYPE")
+        self.assertTrue(reject["rejected"])
+        self.assertTrue(client._subscriptions[md_req_id]["rejected"])
+        client._session.pump()
+        requests = [pairs for pairs in frames_of(exchange.sent) if first(pairs, 35) == "V"]
+        self.assertEqual(len(requests), 1)
+
+    def test_rejected_subscription_is_not_restored(self):
+        transports = []
+
+        def connector(host, port, use_tls, tls_verify, timeout, cafile=None):
+            exchange = ScriptedExchange(eof_when_idle=len(transports) == 0)
+            transports.append(exchange)
+            return exchange
+
+        client = FixMarketDataClient(
+            "demo-user",
+            "s3cret",
+            reconnect=True,
+            reconnect_attempts=1,
+            connector=connector,
+            clock=FakeClock(),
+            sleeper=lambda _seconds: None,
+            warn_outside_session_hours=False,
+        )
+        client.connect()
+        md_req_id = client.subscribe("DLR/NOV26", ["OP", "SE", "OI"], depth=1)
+        transports[0].push(frame(
+            "Y",
+            [(262, md_req_id), (281, "8"), (58, "Unsupported MDEntryType")],
+            3,
+            "ROFX",
+            "demo-user",
+        ))
+        client.run(1)
+        restored = [
+            pairs for pairs in frames_of(transports[1].sent) if first(pairs, 35) == "V"
+        ]
+        self.assertEqual(restored, [])
+        self.assertEqual(
+            values(next(pairs for pairs in frames_of(transports[0].sent) if first(pairs, 35) == "V"), 269),
+            ["4", "6", "C"],
+        )
+
     def test_comp_id_mismatch_logs_out(self):
         client, exchange, _clock = _logged_on()
         exchange.push(frame("0", [], 2, "OTHER", "demo-user"))
