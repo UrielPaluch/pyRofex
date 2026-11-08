@@ -4,6 +4,7 @@ Welcome to pyRofex's Documentation
 Overview
 --------
 *pyRofex* is a python library that allows interactions with ROFEX's Rest and Websocket APIs.
+An optional extra adds a market-data-only FIX client. It does not change the Rest or Websocket functions.
 
 The library is designed to avoid developers hours of research and coding needed to connect with ROFEX APIs, so they could focused on the important part of their software.
 
@@ -39,6 +40,11 @@ Dependencies
 - `simplejson <https://pypi.org/project/simplejson/>`_\: 3.10.0 or higher
 - `enum34 <https://pypi.org/project/enum34/>`_\: 1.1.6 or higher
 - `websocket-client <https://pypi.org/project/websocket_client/>`_\: Between 0.54.0 and 0.57.0
+
+Optional, only for the FIX market-data client:
+
+- `simplefix <https://pypi.org/project/simplefix/>`_\: 1.0.17 or higher (pure Python)
+- `tzdata <https://pypi.org/project/tzdata/>`_\: so the session-hours warning works on Windows
 
 Features
 --------
@@ -249,6 +255,68 @@ Websocket
    pyRofex.order_report_subscription()
 
 ** Every time a new message is received, the correct handler will be call.
+
+FIX market data (optional)
+--------------------------
+
+This client reads Primary market data over FIX 5.0 SP2 (FIXT.1.1). It can send session messages and Market Data Request (``35=V``) only. It cannot send orders, cancels, or order-status requests.
+
+Install the extra. The base install is unchanged, and ``import pyRofex`` does not load it:
+
+.. code-block:: bash
+
+   pip install "pyRofex[fix]"
+
+``simplefix`` is pure Python, so the extra installs on Windows with Python 3.12 without a C++ toolchain. quickfix is not used.
+
+The default host is the reMarkets demo, ``fix.remarkets.primary.com.ar:9876``. That port is TLS: community examples reach it by pointing stunnel at it in client mode. This client wraps the socket with ``ssl`` instead. Pass ``--host`` for any other endpoint, including production. There is no production default. Credentials are read from ``REMARKETS_FIX_USER`` and ``REMARKETS_FIX_PASSWORD``, or from ``--user`` and ``--password``. They are not stored in the library.
+
+Primary's Rules of Engagement V2.0.20 list Market Data Request (``V``), Snapshot/Full Refresh (``W``), and Market Data Request Reject (``Y``). They do not list Incremental Refresh (``X``). ``MDUpdateType`` is only ``0 = Full Refresh``, and the "snapshot + updates" flow is a stream of ``W`` messages. Unsubscribe is another ``V`` with ``SubscriptionRequestType=2`` and the same ``MDReqID``. If an ``X`` frame does arrive, it is parsed, but that behavior is not in the ROE.
+
+Tag 7201 is exposed as ``trade_side`` with values ``BUY``, ``SELL``, or ``None`` (``null`` in the JSONL file). The ROE calls it "Side of the trade". It is not an aggressor flag. A missing 7201 stays ``None``; bid/offer type and tag 54 are not used to fill it. ``trade_condition`` (tag 277, ``U`` = Exchange Last) and ``trd_type`` (tag 828) are kept. Exchange Last can be repeated on a later snapshot when no new trade has occurred. Every received tag is kept, including tags this client does not name.
+
+Session hours in the ROE are 09:00-19:00. The client treats that as America/Argentina/Buenos_Aires and only warns outside the window. Only one FIX session may exist at a time for the same CompIDs. Reconnect is off unless ``--reconnect`` is set. A Resend Request is sent at most once for an inbound gap; market data is not replayed.
+
+CLI, listening for two minutes and writing one JSON object per inbound message (``received_at`` is local time, ``raw`` is the FIX frame with SOH as ``\u0001``, ``parsed`` is the decoded message).
+
+On Windows ``cmd``:
+
+.. code-block:: bat
+
+   set REMARKETS_FIX_USER=your-user
+   set REMARKETS_FIX_PASSWORD=your-password
+   python -m pyRofex.fix_md --symbol DLR/NOV26 --entries BI,OF,LA --depth 5 --seconds 120 --out file.jsonl
+
+On a Unix shell, ``export`` the same two variables and run the same ``python -m pyRofex.fix_md`` command.
+
+Library use:
+
+.. code-block:: python
+
+   import os
+   from pyRofex.fix import FixMarketDataClient
+
+   client = FixMarketDataClient(
+       os.environ["REMARKETS_FIX_USER"],
+       os.environ["REMARKETS_FIX_PASSWORD"],
+   )
+   client.connect()
+   client.subscribe("DLR/NOV26", ["BI", "OF", "LA"], depth=5, updates=True)
+   client.run(120, on_message=print)
+   client.logout()
+
+Live smoke test (not run in CI; this repository has no reMarkets credentials):
+
+1. Create a reMarkets account and confirm the FIX endpoint on the account page.
+2. Export ``REMARKETS_FIX_USER`` and ``REMARKETS_FIX_PASSWORD``.
+3. Run the command above between 09:00 and 19:00 Buenos Aires time, with no other FIX session logged on as that user.
+4. Expect a Logon and then ``35=W`` lines. ``entries[].trade_side`` is ``BUY`` or ``SELL`` only when tag 7201 is present.
+5. If certificate verification fails, retry with ``--insecure``, or run stunnel locally and use ``--no-tls --host 127.0.0.1 --port <stunnel port>``.
+6. If Logon is rejected because the acceptor kept the previous sequence, retry once with ``--reset-seq-num`` (tag 141, which the ROE does not list).
+
+What is checked offline: Logon and Market Data Request encoding, checksum and body length, repeating group 268, tag 7201 present and absent, unknown tags, heartbeats, Test Request, Logout, a single Resend Request, and the CLI against a fake socket. No test opens a network connection.
+
+Not checked against reMarkets: the TLS certificate, whether tag 7201 is populated for DLR futures, whether ``EV`` really corresponds to cash volume (``269=w``), and whether a second connection needs tag 141. ``IV``, ``ACP``, and ``TC`` are not MDEntryType values in the ROE, so the client rejects them.
 
 Official API Documentation
 ==========================

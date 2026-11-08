@@ -5,7 +5,13 @@
     All the library exposed functionality
 """
 import warnings
-from inspect import getargspec
+
+try:
+    # Removed in Python 3.11. getfullargspec still exposes .args and .varargs,
+    # which is all _validate_handler reads. Older interpreters keep getargspec.
+    from inspect import getargspec
+except ImportError:  # pragma: no cover - Python 3.11+
+    from inspect import getfullargspec as getargspec
 
 from .clients.rest_rfx import RestClient
 from .clients.websocket_rfx import WebSocketClient

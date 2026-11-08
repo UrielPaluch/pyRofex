@@ -20,6 +20,16 @@ setuptools.setup(
         'enum34>=1.1.6',
         'websocket-client>=0.54.0,<0.58.0',
     ],
+    extras_require={
+        # Pure-Python FIX codec. Not imported by the REST/WebSocket API.
+        # quickfix is intentionally not used: it needs a C++ toolchain and
+        # is awkward to build on Windows.
+        'fix': [
+            'simplefix>=1.0.17',
+            # zoneinfo on Windows needs this for the session-hours warning.
+            'tzdata>=2024.1',
+        ],
+    },
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",
