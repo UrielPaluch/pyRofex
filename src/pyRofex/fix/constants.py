@@ -72,11 +72,43 @@ FIX_ENTRY_NAMES = {
     "w": "CASH_VOLUME",
 }
 
-# Tag 7201 Trade Side. The ROE says "Side of the trade": 1=Buy, 2=Sell.
-# Nothing in the ROE calls this an aggressor flag.
+# Tag 7201 is "Side of the trade" (ROE snapshot table): 1=Buy, 2=Sell.
+# It is not an aggressor flag. On 2026-11-08 the reMarkets demo matched the
+# passive order's side in 6 of 6 trades, under both role configurations.
+# Do not invert the value and do not derive it from tag 54 or from 35=8.
 TRADE_SIDE_BY_VALUE = {
     "1": "BUY",
     "2": "SELL",
+}
+
+# Tag 281, Market Data Request Reject (ROE pp.64-65).
+MD_REQ_REJ_REASONS = {
+    "0": "UNKNOWN_SYMBOL",
+    "1": "DUPLICATE_MD_REQ_ID",
+    "2": "INSUFFICIENT_BANDWIDTH",
+    "3": "INSUFFICIENT_PERMISSIONS",
+    "4": "UNSUPPORTED_SUBSCRIPTION_REQUEST_TYPE",
+    "5": "UNSUPPORTED_MARKET_DEPTH",
+    "6": "UNSUPPORTED_MD_UPDATE_TYPE",
+    "7": "UNSUPPORTED_AGGREGATED_BOOK",
+    "8": "UNSUPPORTED_MD_ENTRY_TYPE",
+}
+
+# Tag 340 TradSesStatus, Trading Session Status (ROE p.31).
+TRAD_SES_STATUS = {
+    "0": "UNKNOWN",
+    "1": "HALTED",
+    "2": "OPEN",
+    "3": "CLOSED",
+}
+
+# Tag 625 TradingSessionSubID, same message (ROE p.31).
+TRADING_SESSION_SUB_ID = {
+    "0": "PRE_TRADING",
+    "1": "TRADING",
+    "2": "POST_TRADING",
+    "3": "AFTER_HOUR",
+    "4": "CLOSED",
 }
 
 # Tags we name on a market-data entry. Anything else stays in unknown_tags.
@@ -103,7 +135,8 @@ KNOWN_MESSAGE_TAGS = frozenset({
     98, 108, 112, 1137, 553, 554, 141,
     7, 16, 36, 123, 45, 58, 371, 372, 373,
     37, 39, 54,  # Execution Report identity; 54 is not trade_side
-    281,  # MDReqRejReason
+    281,
+    325, 335, 336, 340, 625, 1300, 1301,  # Trading Session Status (35=h)
 })
 
 SOH = "\x01"

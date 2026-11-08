@@ -189,7 +189,49 @@ class ParserTests(unittest.TestCase):
         parsed = parse_message(pairs)
         self.assertEqual(parsed["md_req_id"], "md1")
         self.assertEqual(parsed["md_req_rej_reason"], "0")
+        self.assertEqual(parsed["md_req_rej_reason_name"], "UNKNOWN_SYMBOL")
+        self.assertTrue(parsed["rejected"])
         self.assertEqual(parsed["text"], "Unknown symbol")
+
+    def test_trading_session_status_names_roe_fields(self):
+        pairs = parse_frame(encode_pairs([
+            (8, "FIXT.1.1"),
+            (35, "h"),
+            (34, "4"),
+            (49, "ROFX"),
+            (52, SENDING_TIME),
+            (56, "demo-user"),
+            (58, "EXTERNAL"),
+            (335, "ts-1"),
+            (336, "1"),
+            (625, "1"),
+            (340, "2"),
+            (1301, "ROFX"),
+            (1300, "DDF"),
+            (325, "Y"),
+            (9991, "keep-me"),
+        ]))
+        parsed = parse_message(pairs)
+        self.assertEqual(parsed["trad_ses_status"], "2")
+        self.assertEqual(parsed["trad_ses_status_name"], "OPEN")
+        self.assertEqual(parsed["trading_session_id"], "1")
+        self.assertEqual(parsed["trading_session_sub_id"], "1")
+        self.assertEqual(parsed["trading_session_sub_id_name"], "TRADING")
+        self.assertEqual(parsed["market_segment_id"], "DDF")
+        self.assertEqual(parsed["market_id"], "ROFX")
+        self.assertEqual(parsed["unsolicited_indicator"], "Y")
+        self.assertEqual(parsed["text"], "EXTERNAL")
+        self.assertEqual(parsed["trad_ses_req_id"], "ts-1")
+        self.assertEqual(parsed["unknown_tags"], [{"tag": 9991, "value": "keep-me"}])
+        from pyRofex.fix.constants import TRAD_SES_STATUS
+        self.assertEqual(
+            TRAD_SES_STATUS,
+            {"0": "UNKNOWN", "1": "HALTED", "2": "OPEN", "3": "CLOSED"},
+        )
+        self.assertIsNone(parse_message(parse_frame(encode_pairs([
+            (8, "FIXT.1.1"), (35, "h"), (34, "5"), (49, "ROFX"),
+            (52, SENDING_TIME), (56, "demo-user"), (340, "9"),
+        ])))["trad_ses_status_name"])
 
 
 if __name__ == "__main__":

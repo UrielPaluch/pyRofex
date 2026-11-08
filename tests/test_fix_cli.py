@@ -121,6 +121,31 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(seen, {"host": "127.0.0.1", "port": 8080, "tls": False})
 
+    def test_entries_flag_can_request_reference_data(self):
+        exchange = ScriptedExchange()
+
+        def connector(host, port, use_tls, tls_verify, timeout, cafile=None):
+            return exchange
+
+        with tempfile.TemporaryDirectory() as directory:
+            out = str(Path(directory) / "out.jsonl")
+            code = main(
+                [
+                    "--symbol", "DLR/NOV26",
+                    "--entries", "OP,CL,SE,HI,LO,TV,OI",
+                    "--seconds", "1",
+                    "--out", out,
+                    "--user", "demo-user",
+                    "--password", "from-env",
+                ],
+                connector=connector,
+                clock=FakeClock(),
+                sleeper=lambda _seconds: None,
+            )
+        self.assertEqual(code, 0)
+        request = next(pairs for pairs in frames_of(exchange.sent) if first(pairs, 35) == "V")
+        self.assertEqual(values_of(request, 269), ["4", "5", "6", "7", "8", "B", "C"])
+
 def values_of(pairs, tag):
     return [value for item_tag, value in pairs if item_tag == tag]
 

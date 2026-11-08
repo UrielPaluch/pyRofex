@@ -44,8 +44,14 @@ def build_parser():
     )
     parser.add_argument("--symbol", action="append", required=True,
                         help="Instrument symbol, for example DLR/NOV26. Repeat for more than one.")
-    parser.add_argument("--entries", default="BI,OF,LA",
-                        help="Comma-separated pyRofex entry codes. Default: BI,OF,LA")
+    parser.add_argument(
+        "--entries",
+        default="BI,OF,LA",
+        help=(
+            "Comma-separated entry codes. Default: BI,OF,LA. "
+            "Also OP (269=4), CL (5), SE (6), HI (7), LO (8), TV (B), OI (C)."
+        ),
+    )
     parser.add_argument("--depth", type=int, default=5,
                         help="Book depth 0 (full) through 5. Default: 5")
     parser.add_argument("--seconds", type=float, default=120,

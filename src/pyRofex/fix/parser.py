@@ -13,7 +13,10 @@ from .constants import (
     FIX_ENTRY_NAMES,
     KNOWN_ENTRY_TAGS,
     KNOWN_MESSAGE_TAGS,
+    MD_REQ_REJ_REASONS,
     TRADE_SIDE_BY_VALUE,
+    TRADING_SESSION_SUB_ID,
+    TRAD_SES_STATUS,
 )
 
 
@@ -37,12 +40,17 @@ def parse_message(pairs):
     elif msg_type == "X":
         parsed.update(_market_data(pairs, delimiter=_incremental_delimiter(pairs)))
     elif msg_type == "Y":
+        reason = _first(pairs, 281)
         parsed.update({
             "md_req_id": _first(pairs, 262),
-            "md_req_rej_reason": _first(pairs, 281),
+            "md_req_rej_reason": reason,
+            "md_req_rej_reason_name": MD_REQ_REJ_REASONS.get(reason),
             "text": _first(pairs, 58),
+            "rejected": True,
             "unknown_tags": _message_unknowns(pairs, entry_spans=[]),
         })
+    elif msg_type == "h":
+        parsed.update(_trading_session_status(pairs))
     elif msg_type == "8":
         # Unsolicited account execution report. Tag 54 stays the raw order
         # side. It is not trade_side and there is no market-data entry list.
@@ -59,14 +67,36 @@ def parse_message(pairs):
 
 
 def trade_side_from_value(value):
-    """Map tag 7201 to ``BUY`` / ``SELL`` / ``None``.
+    """Map tag 7201, "Side of the trade", to ``BUY`` / ``SELL`` / ``None``.
 
-    Any value other than ``1`` or ``2``, including a missing value, is
-    ``None``. The raw tag is still kept by the caller.
+    The ROE does not call this an aggressor flag. On 2026-11-08, reMarkets
+    demo prints matched the passive order's side in 6 of 6 trades, in both
+    role configurations. This function does not invert that value. Any value
+    other than ``1`` or ``2``, including a missing value, is ``None``. The
+    raw tag is still kept by the caller. Tag 54 is not an input.
     """
     if value is None:
         return None
     return TRADE_SIDE_BY_VALUE.get(value)
+
+
+def _trading_session_status(pairs):
+    """Named fields for ``35=h`` from the ROE (p.31). Raw values stay put."""
+    status = _first(pairs, 340)
+    sub_id = _first(pairs, 625)
+    return {
+        "text": _first(pairs, 58),
+        "trad_ses_req_id": _first(pairs, 335),
+        "trading_session_id": _first(pairs, 336),
+        "trading_session_sub_id": sub_id,
+        "trading_session_sub_id_name": TRADING_SESSION_SUB_ID.get(sub_id),
+        "trad_ses_status": status,
+        "trad_ses_status_name": TRAD_SES_STATUS.get(status),
+        "market_segment_id": _first(pairs, 1300),
+        "market_id": _first(pairs, 1301),
+        "unsolicited_indicator": _first(pairs, 325),
+        "unknown_tags": _message_unknowns(pairs, entry_spans=[]),
+    }
 
 
 def _market_data(pairs, delimiter):
