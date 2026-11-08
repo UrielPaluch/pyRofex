@@ -44,6 +44,7 @@ Dependencies
 Optional, only for the FIX market-data client:
 
 - `simplefix <https://pypi.org/project/simplefix/>`_\: 1.0.17 or higher (pure Python)
+- `certifi <https://pypi.org/project/certifi/>`_\: CA bundle used when verifying TLS
 - `tzdata <https://pypi.org/project/tzdata/>`_\: so the session-hours warning works on Windows
 
 Features
@@ -271,9 +272,13 @@ Install the extra. The base install is unchanged, and ``import pyRofex`` does no
 
 The default host is the reMarkets demo, ``fix.remarkets.primary.com.ar:9876``. That port is TLS: community examples reach it by pointing stunnel at it in client mode. This client wraps the socket with ``ssl`` instead. Pass ``--host`` for any other endpoint, including production. There is no production default. Credentials are read from ``REMARKETS_FIX_USER`` and ``REMARKETS_FIX_PASSWORD``, or from ``--user`` and ``--password``. They are not stored in the library.
 
+TLS verification is on by default. The trust store is certifi, or the PEM file passed with ``--cafile``. The demo server's chain does not validate that way. It sends an expired SHA-1 leaf ``CN=www.primary.com.ar`` (notAfter 2014-06-11, no subject alternative name for the FIX host), issued by Thawte SSL CA (notAfter 2020-02-07). The last certificate in the handshake is thawte Primary Root CA, which is signed by Thawte Premium Server CA and is not in certifi or a current Windows store. OpenSSL then reports ``unable to get local issuer certificate``. That is not fixed by installing certifi alone: the leaf is also expired, SHA-1, and named for a different host. When ``--cafile`` is omitted, a failed public check of this demo host is followed by a pin of that exact leaf (shipped as ``remarkets_demo_leaf.pem``). A different certificate is rejected. ``--cafile`` does not use the pin. ``--insecure`` skips both checks. ``--no-tls`` is for a local stunnel listener.
+
 Primary's Rules of Engagement V2.0.20 list Market Data Request (``V``), Snapshot/Full Refresh (``W``), and Market Data Request Reject (``Y``). They do not list Incremental Refresh (``X``). ``MDUpdateType`` is only ``0 = Full Refresh``, and the "snapshot + updates" flow is a stream of ``W`` messages. Unsubscribe is another ``V`` with ``SubscriptionRequestType=2`` and the same ``MDReqID``. If an ``X`` frame does arrive, it is parsed, but that behavior is not in the ROE.
 
-Tag 7201 is exposed as ``trade_side`` with values ``BUY``, ``SELL``, or ``None`` (``null`` in the JSONL file). The ROE calls it "Side of the trade". It is not an aggressor flag. A missing 7201 stays ``None``; bid/offer type and tag 54 are not used to fill it. ``trade_condition`` (tag 277, ``U`` = Exchange Last) and ``trd_type`` (tag 828) are kept. Exchange Last can be repeated on a later snapshot when no new trade has occurred. Every received tag is kept, including tags this client does not name.
+Tag 7201 is exposed as ``trade_side`` with values ``BUY``, ``SELL``, or ``None`` (``null`` in the JSONL file). The ROE calls it "Side of the trade". It is not an aggressor flag. A missing 7201 stays ``None``; bid/offer type and tag 54 are not used to fill it. ``trade_condition`` (tag 277, ``U`` = Exchange Last) and ``trd_type`` (tag 828) are kept. Exchange Last can be repeated on a later snapshot when no new trade has occurred. Tags 288 and 289, when the demo sends them, are kept as ``md_entry_buyer`` and ``md_entry_seller`` and are not a side. Every received tag is kept, including tags this client does not name.
+
+``35=h`` TradingSessionStatus is not a market-data entry. The demo sends a burst of unsolicited ones after the snapshot. They are written to the JSONL like any other inbound message and do not change the subscription or the sequence handling.
 
 Session hours in the ROE are 09:00-19:00. The client treats that as America/Argentina/Buenos_Aires and only warns outside the window. Only one FIX session may exist at a time for the same CompIDs. Reconnect is off unless ``--reconnect`` is set. A Resend Request is sent at most once for an inbound gap; market data is not replayed.
 
@@ -305,18 +310,20 @@ Library use:
    client.run(120, on_message=print)
    client.logout()
 
-Live smoke test (not run in CI; this repository has no reMarkets credentials):
+A Windows / Python 3.12 smoke test of the demo (before the pin was added) logged on only with ``--insecure``. Without it, TLS failed with ``CERTIFICATE_VERIFY_FAILED`` / ``unable to get local issuer certificate``, and that ``ssl.SSLError`` was reported as ``could not write ...jsonl`` because it is an ``OSError`` raised from ``connect`` inside the file ``with`` block. Connect and TLS failures are now separate messages from output-file failures. The same smoke test, once the TLS check was skipped, showed this session and then a clean Logout (``35=5``):
 
-1. Create a reMarkets account and confirm the FIX endpoint on the account page.
-2. Export ``REMARKETS_FIX_USER`` and ``REMARKETS_FIX_PASSWORD``.
-3. Run the command above between 09:00 and 19:00 Buenos Aires time, with no other FIX session logged on as that user.
-4. Expect a Logon and then ``35=W`` lines. ``entries[].trade_side`` is ``BUY`` or ``SELL`` only when tag 7201 is present.
-5. If certificate verification fails, retry with ``--insecure``, or run stunnel locally and use ``--no-tls --host 127.0.0.1 --port <stunnel port>``.
-6. If Logon is rejected because the acceptor kept the previous sequence, retry once with ``--reset-seq-num`` (tag 141, which the ROE does not list).
+- Logon from the server
+- one ``35=W`` snapshot
+- on the order of 50 unsolicited ``35=h`` TradingSessionStatus messages
+- heartbeats, including a Test Request echo ``112=TR1``
 
-What is checked offline: Logon and Market Data Request encoding, checksum and body length, repeating group 268, tag 7201 present and absent, unknown tags, heartbeats, Test Request, Logout, a single Resend Request, and the CLI against a fake socket. No test opens a network connection.
+The snapshot had ``268=3``. The bid and offer were empty-book placeholders with only ``290=0`` (no price and no size). The trade entry was ``269=2`` with tags 270, 271, 272, 273, ``277=U``, ``288=*``, ``289=*``, and ``7201=1``. It did not include 828 or 54. ``7201=1`` is ``trade_side=BUY`` for that one trade. That is a single observation, not a guarantee that every DLR future print carries 7201. The offline fixture uses that tag set; the username is replaced, and the numeric price, size, and clock fields are stand-ins because the live digits were not copied out. ``288`` and ``289`` are the literal asterisks from the sanitized report.
 
-Not checked against reMarkets: the TLS certificate, whether tag 7201 is populated for DLR futures, whether ``EV`` really corresponds to cash volume (``269=w``), and whether a second connection needs tag 141. ``IV``, ``ACP``, and ``TC`` are not MDEntryType values in the ROE, so the client rejects them.
+Repeat the smoke test between 09:00 and 19:00 Buenos Aires time, with no other FIX session logged on as that user. Do not pass ``--insecure`` unless you intend to skip both the CA check and the demo pin. If Logon is rejected because the acceptor kept the previous sequence, retry once with ``--reset-seq-num`` (tag 141, which the ROE does not list).
+
+What is checked offline: Logon and Market Data Request encoding, checksum and body length, the sanitized demo snapshot (empty book, 7201 present, 288/289 kept, no 828 or 54), a burst of ``35=h``, Test Request id ``TR1`` and its echo, Logout, a single Resend Request, the demo leaf pin, and CLI messages that distinguish TLS errors, connection errors, and file errors. Those tests do not open a network connection. The certificate chain above was read with a TLS handshake only; no FIX Logon was sent from this environment.
+
+Still not established from one snapshot: whether 7201 is populated on later trades or on other symbols, whether ``EV`` corresponds to cash volume (``269=w``), and whether a second connection needs tag 141. ``IV``, ``ACP``, and ``TC`` are not MDEntryType values in the ROE, so the client rejects them.
 
 Official API Documentation
 ==========================

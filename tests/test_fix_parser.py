@@ -7,7 +7,7 @@ import unittest
 from pyRofex.fix.codec import encode_pairs, parse_frame
 from pyRofex.fix.parser import parse_message
 
-from fixutil import SENDING_TIME, article_snapshot_pairs, first
+from fixutil import SENDING_TIME, article_snapshot_pairs, first, remarkets_smoke_snapshot_body
 
 
 def _encode(body):
@@ -24,6 +24,43 @@ def _encode(body):
 
 
 class ParserTests(unittest.TestCase):
+    def test_sanitized_remarkets_snapshot_empty_book_and_trade_side(self):
+        pairs = [
+            (8, "FIXT.1.1"),
+            (35, "W"),
+            (34, "2"),
+            (49, "ROFX"),
+            (52, SENDING_TIME),
+            (56, "demo-user"),
+        ]
+        pairs.extend(remarkets_smoke_snapshot_body())
+        parsed = parse_message(parse_frame(encode_pairs(pairs)))
+        self.assertEqual(parsed["symbol"], "DLR/NOV26")
+        self.assertEqual(parsed["no_md_entries"], "3")
+        self.assertEqual(len(parsed["entries"]), 3)
+        bid, offer, trade = parsed["entries"]
+        self.assertEqual(
+            [(item["tag"], item["value"]) for item in bid["tags"]],
+            [(269, "0"), (290, "0")],
+        )
+        self.assertEqual(
+            [(item["tag"], item["value"]) for item in offer["tags"]],
+            [(269, "1"), (290, "0")],
+        )
+        self.assertIsNone(bid["md_entry_px"])
+        self.assertIsNone(bid["md_entry_size"])
+        self.assertIsNone(bid["trade_side"])
+        self.assertEqual(bid["md_entry_position_no"], "0")
+        self.assertIsNone(offer["trade_side"])
+        self.assertEqual(trade["md_entry_type"], "2")
+        self.assertEqual(trade["trade_condition"], "U")
+        self.assertEqual(trade["trade_side"], "BUY")
+        self.assertEqual(trade["md_entry_buyer"], "*")
+        self.assertEqual(trade["md_entry_seller"], "*")
+        self.assertIsNone(trade["trd_type"])
+        self.assertFalse(any(item["tag"] == 54 for item in trade["tags"]))
+        self.assertFalse(any(item["tag"] == 828 for item in parsed["tags"]))
+        self.assertNotIn("aggressor", json.dumps(parsed))
     def test_trade_side_buy_and_sell_come_only_from_tag_7201(self):
         pairs = _encode([
             (55, "DLR/NOV26"),

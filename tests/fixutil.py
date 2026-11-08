@@ -151,6 +151,35 @@ class ScriptedExchange(object):
         self.closed = True
 
 
+def remarkets_smoke_snapshot_body(md_req_id="md1", symbol="DLR/NOV26"):
+    """Sanitized ``35=W`` from the reMarkets demo smoke test.
+
+    Username is not in this body (the test frame uses ``demo-user`` as
+    TargetCompID). Price, size, date, and time stand in for digits that
+    were not copied out of the live message. The tag set matches the
+    report: empty bid and offer carry only ``290=0``; the trade carries
+    ``277=U``, ``288=*``, ``289=*``, ``7201=1``, and neither 828 nor 54.
+    """
+    return [
+        (55, symbol),
+        (207, "ROFX"),
+        (262, md_req_id),
+        (264, "5"),
+        (268, "3"),
+        (269, "0"), (290, "0"),
+        (269, "1"), (290, "0"),
+        (269, "2"),
+        (270, "1000.25"),
+        (271, "1"),
+        (272, "20261108"),
+        (273, "16:40:00.000"),
+        (277, "U"),
+        (288, "*"),
+        (289, "*"),
+        (7201, "1"),
+    ]
+
+
 def default_snapshot_body(md_req_id, symbol):
     return [
         (55, symbol),

@@ -90,6 +90,8 @@ KNOWN_ENTRY_TAGS = frozenset({
     273,   # MDEntryTime
     277,   # TradeCondition
     279,   # MDUpdateAction (standard X; not in the Primary ROE)
+    288,   # MDEntryBuyer (not in the current ROE table; sent by the demo)
+    289,   # MDEntrySeller (not in the current ROE table; sent by the demo)
     290,   # MDEntryPositionNo
     828,   # TrdType
     7201,  # Trade Side

@@ -102,6 +102,8 @@ def _entry(group):
         "md_entry_date": _first(group, 272),
         "md_entry_time": _first(group, 273),
         "trade_condition": _first(group, 277),
+        "md_entry_buyer": _first(group, 288),
+        "md_entry_seller": _first(group, 289),
         "md_entry_position_no": _first(group, 290),
         "trd_type": _first(group, 828),
         "md_update_action": _first(group, 279),

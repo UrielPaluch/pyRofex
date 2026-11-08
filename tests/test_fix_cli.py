@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 """CLI tests with a fake transport. No sockets and no credentials on disk."""
 
+import io
 import json
 import os
+import ssl
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 
 from pyRofex.fix.constants import REMARKETS_FIX_HOST
@@ -41,11 +44,12 @@ class CliTests(unittest.TestCase):
         os.environ["REMARKETS_FIX_PASSWORD"] = "from-env"
         exchange = ScriptedExchange()
 
-        def connector(host, port, use_tls, tls_verify, timeout):
+        def connector(host, port, use_tls, tls_verify, timeout, cafile=None):
             self.assertEqual(host, REMARKETS_FIX_HOST)
             self.assertEqual(port, 9876)
             self.assertTrue(use_tls)
             self.assertTrue(tls_verify)
+            self.assertIsNone(cafile)
             return exchange
 
         with tempfile.TemporaryDirectory() as directory:
@@ -91,7 +95,7 @@ class CliTests(unittest.TestCase):
     def test_explicit_host_is_passed_through(self):
         seen = {}
 
-        def connector(host, port, use_tls, tls_verify, timeout):
+        def connector(host, port, use_tls, tls_verify, timeout, cafile=None):
             seen["host"] = host
             seen["port"] = port
             seen["tls"] = use_tls
@@ -131,7 +135,10 @@ class CliCredentialTests(unittest.TestCase):
             self.assertNotIn("REMARKETS_FIX_PASSWORD =", text)
         self.assertTrue(hosts)
         for host in hosts:
-            self.assertIn("fix.remarkets.primary.com.ar", host)
+            self.assertTrue(
+                "fix.remarkets.primary.com.ar" in host or "www.primary.com.ar" in host,
+                host,
+            )
 
         os.environ["REMARKETS_FIX_USER"] = "demo-user"
         os.environ["REMARKETS_FIX_PASSWORD"] = "from-env"
@@ -153,6 +160,121 @@ class CliCredentialTests(unittest.TestCase):
         logon = [pairs for pairs in frames_of(exchange.sent) if first(pairs, 35) == "A"][0]
         self.assertEqual(first(logon, 554), "from-env")
         self.assertNotIn("from-env", text)
+
+
+class CliErrorTests(unittest.TestCase):
+    def _run(self, argv, connector):
+        err = io.StringIO()
+        with redirect_stderr(err):
+            code = main(
+                argv,
+                connector=connector,
+                clock=FakeClock(),
+                sleeper=lambda _seconds: None,
+            )
+        return code, err.getvalue()
+
+    def test_tls_error_is_not_reported_as_a_file_error(self):
+        def connector(*_args, **_kwargs):
+            raise ssl.SSLError("unable to get local issuer certificate")
+
+        with tempfile.TemporaryDirectory() as directory:
+            out = str(Path(directory) / "book.jsonl")
+            code, err = self._run(
+                ["--symbol", "DLR/NOV26", "--seconds", "1", "--out", out,
+                 "--user", "demo-user", "--password", "secret"],
+                connector,
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("TLS error connecting to", err)
+        self.assertIn("unable to get local issuer certificate", err)
+        self.assertNotIn("could not write", err)
+
+    def test_connection_refused_is_not_a_file_error(self):
+        def connector(*_args, **_kwargs):
+            raise ConnectionRefusedError(111, "Connection refused")
+
+        with tempfile.TemporaryDirectory() as directory:
+            out = str(Path(directory) / "book.jsonl")
+            code, err = self._run(
+                ["--symbol", "DLR/NOV26", "--seconds", "1", "--out", out,
+                 "--user", "demo-user", "--password", "secret"],
+                connector,
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("could not connect to", err)
+        self.assertNotIn("could not write", err)
+        self.assertNotIn("TLS error", err)
+
+    def test_missing_output_directory_is_a_file_error(self):
+        def connector(*_args, **_kwargs):
+            raise AssertionError("connector should not be called")
+
+        with tempfile.TemporaryDirectory() as directory:
+            code, err = self._run(
+                ["--symbol", "DLR/NOV26", "--seconds", "1", "--out", directory,
+                 "--user", "demo-user", "--password", "secret"],
+                connector,
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("could not write", err)
+        self.assertNotIn("TLS error", err)
+        self.assertNotIn("could not connect", err)
+
+    def test_write_failure_after_connect_is_a_file_error(self):
+        import builtins
+
+        class Handle(object):
+            def write(self, _data):
+                raise OSError("disk full")
+
+            def flush(self):
+                pass
+
+            def close(self):
+                pass
+
+        original = builtins.open
+
+        def fake_open(path, *args, **kwargs):
+            if str(path).endswith("book.jsonl"):
+                return Handle()
+            return original(path, *args, **kwargs)
+
+        builtins.open = fake_open
+        try:
+            code, err = self._run(
+                ["--symbol", "DLR/NOV26", "--seconds", "1", "--out", "book.jsonl",
+                 "--user", "demo-user", "--password", "secret"],
+                lambda *_args, **_kwargs: ScriptedExchange(),
+            )
+        finally:
+            builtins.open = original
+        self.assertEqual(code, 1)
+        self.assertIn("could not write book.jsonl", err)
+        self.assertIn("disk full", err)
+        self.assertNotIn("TLS error", err)
+
+    def test_cafile_is_passed_to_the_connector(self):
+        seen = {}
+
+        def connector(host, port, use_tls, tls_verify, timeout, cafile=None):
+            seen["cafile"] = cafile
+            seen["tls_verify"] = tls_verify
+            return ScriptedExchange()
+
+        with tempfile.TemporaryDirectory() as directory:
+            cafile = str(Path(directory) / "ca.pem")
+            Path(cafile).write_text("placeholder\n", encoding="ascii")
+            out = str(Path(directory) / "out.jsonl")
+            code, _err = self._run(
+                ["--symbol", "DLR/NOV26", "--seconds", "1", "--out", out,
+                 "--cafile", cafile, "--user", "demo-user", "--password", "secret"],
+                connector,
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(seen["cafile"], cafile)
+        self.assertTrue(seen["tls_verify"])
 
 
 if __name__ == "__main__":

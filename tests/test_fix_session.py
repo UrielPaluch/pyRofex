@@ -18,6 +18,7 @@ from fixutil import (
     frame,
     frames_of,
     outside_hours_clock,
+    remarkets_smoke_snapshot_body,
     values,
 )
 
@@ -178,7 +179,7 @@ class SessionTests(unittest.TestCase):
     def test_default_host_is_remarkets_and_reconnect_is_off(self):
         created = []
 
-        def connector(host, port, use_tls, tls_verify, timeout):
+        def connector(host, port, use_tls, tls_verify, timeout, cafile=None):
             created.append((host, port, use_tls, tls_verify))
             return ScriptedExchange()
 
@@ -218,7 +219,7 @@ class SessionTests(unittest.TestCase):
 
         calls = {"n": 0}
 
-        def connector(host, port, use_tls, tls_verify, timeout):
+        def connector(host, port, use_tls, tls_verify, timeout, cafile=None):
             calls["n"] += 1
             # First session ends as soon as it is idle. The second stays up.
             return ScriptedExchange(eof_when_idle=calls["n"] == 1)
@@ -242,7 +243,7 @@ class SessionTests(unittest.TestCase):
     def test_reconnect_restores_the_market_data_request(self):
         transports = []
 
-        def connector(host, port, use_tls, tls_verify, timeout):
+        def connector(host, port, use_tls, tls_verify, timeout, cafile=None):
             exchange = ScriptedExchange(eof_when_idle=len(transports) == 0)
             transports.append(exchange)
             return exchange
@@ -320,6 +321,47 @@ class SessionTests(unittest.TestCase):
             warn_outside_session_hours=False,
         )
         self.assertNotIn("s3cret-value", repr(client))
+
+    def test_trading_session_status_burst_is_logged_and_tr1_echo_clears(self):
+        client, exchange, clock = _logged_on()
+        session = client._session
+        seen = []
+        session.on_message = seen.append
+        exchange.push(frame(
+            "W", remarkets_smoke_snapshot_body(), 2, "ROFX", "demo-user"
+        ))
+        statuses = b"".join(
+            frame("h", [(325, "Y"), (336, "1"), (340, "2")], seq, "ROFX", "demo-user")
+            for seq in range(3, 53)
+        )
+        exchange.push(statuses)
+        session.pump()
+        session.pump()
+        self.assertEqual(session.state, "logged_on")
+        self.assertEqual(session.in_expected, 53)
+        types = [record["parsed"]["msg_type"] for record in seen]
+        self.assertEqual(types[0], "W")
+        self.assertEqual(types[1:], ["h"] * 50)
+        trade = seen[0]["parsed"]["entries"][2]
+        self.assertEqual(trade["trade_side"], "BUY")
+        self.assertEqual(trade["trade_condition"], "U")
+
+        session.last_tx = clock.monotonic()
+        session.last_rx = clock.monotonic() - session.heartbeat_interval
+        exchange.out_seq = session.in_expected
+        session.on_timer()
+        test_requests = [
+            pairs for pairs in frames_of(exchange.sent) if first(pairs, 35) == "1"
+        ]
+        self.assertEqual(first(test_requests[-1], 112), "TR1")
+        session.pump()
+        self.assertIsNone(session.test_req_id)
+        self.assertEqual(session.state, "logged_on")
+        self.assertEqual(seen[-1]["parsed"]["msg_type"], "0")
+        echoed = [
+            item["value"] for item in seen[-1]["parsed"]["tags"] if item["tag"] == 112
+        ]
+        self.assertEqual(echoed, ["TR1"])
 
     def test_peer_logout_is_answered_once(self):
         client, exchange, _clock = _logged_on()

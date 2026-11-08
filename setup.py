@@ -26,9 +26,16 @@ setuptools.setup(
         # is awkward to build on Windows.
         'fix': [
             'simplefix>=1.0.17',
+            # Default trust store for TLS. The reMarkets demo chain is not in
+            # this bundle; see pyRofex.fix.tls. Windows still needs it for
+            # hosts that present a current public certificate.
+            'certifi>=2024.2.2',
             # zoneinfo on Windows needs this for the session-hours warning.
             'tzdata>=2024.1',
         ],
+    },
+    package_data={
+        'pyRofex.fix': ['remarkets_demo_leaf.pem'],
     },
     classifiers=[
         "Programming Language :: Python :: 3",

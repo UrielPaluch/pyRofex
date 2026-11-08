@@ -12,6 +12,7 @@ TLS to that port). ``use_tls=False`` is for a local stunnel listener.
 
 import socket
 import ssl
+import sys
 import warnings
 from datetime import datetime, timezone
 
@@ -27,9 +28,10 @@ from .constants import (
     SESSION_CLOSE_HOUR,
     SESSION_OPEN_HOUR,
 )
-from .errors import FixConnectionError, FixLogonError, FixSessionError
+from .errors import FixConnectionError, FixLogonError, FixSessionError, FixTLSError
 from .messages import check_depth, check_heartbeat, normalize_entries
 from .session import FixMdSession
+from . import tls as tlsmod
 
 
 class RealClock(object):
@@ -74,29 +76,82 @@ def in_fix_session_hours(moment):
     return SESSION_OPEN_HOUR * 60 <= minutes < SESSION_CLOSE_HOUR * 60
 
 
-def default_connector(host, port, use_tls, tls_verify, timeout):
-    """Open a TCP connection, optionally wrapped in TLS.
-
-    ``timeout`` is the connect timeout. The socket is then put on a short
-    read timeout so heartbeat timers can run. This function is the only
-    place that touches the network.
-    """
+def _tcp_socket(host, port, timeout):
     sock = socket.create_connection((host, port), timeout=timeout)
     sock.settimeout(1.0)
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
     except OSError:
         pass
+    return sock
+
+
+def _close_quietly(sock):
+    if sock is None:
+        return
+    try:
+        sock.close()
+    except Exception:
+        pass
+
+
+def default_connector(host, port, use_tls, tls_verify, timeout, cafile=None):
+    """Open a TCP connection, optionally wrapped in TLS.
+
+    ``timeout`` is the connect timeout. The socket is then put on a short
+    read timeout so heartbeat timers can run. This function is the only
+    place that touches the network.
+
+    With verification on, the trust store is ``cafile`` or certifi. If that
+    rejects the reMarkets demo and ``cafile`` was not set, the peer leaf
+    must match the pinned demo certificate. A mismatch raises
+    :class:`FixTLSError` (not a bare ``ssl.SSLError``).
+    """
+    sock = _tcp_socket(host, port, timeout)
     if not use_tls:
         return sock
-    context = ssl.create_default_context()
     if not tls_verify:
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
+        try:
+            return tlsmod.wrap_unverified(sock, host)
+        except Exception:
+            _close_quietly(sock)
+            raise
     try:
-        return context.wrap_socket(sock, server_hostname=host)
+        return tlsmod.wrap_verified(sock, host, cafile)
+    except ssl.SSLError as exc:
+        _close_quietly(sock)
+        sock = None
+        if not tlsmod.allow_demo_pin(host, cafile, tls_verify):
+            raise FixTLSError(tlsmod.explain_tls_failure(exc, host, cafile)) from exc
+        pinned_sock = None
+        try:
+            pinned_sock = _tcp_socket(host, port, timeout)
+            wrapped = tlsmod.wrap_unverified(pinned_sock, host)
+            pinned_sock = None
+            if tlsmod.accept_pinned_demo(wrapped) is None:
+                raise FixTLSError(
+                    tlsmod.explain_tls_failure(exc, host, cafile)
+                    + " The peer leaf did not match the pinned demo certificate."
+                ) from exc
+        except ssl.SSLError as pin_exc:
+            _close_quietly(pinned_sock)
+            raise FixTLSError(tlsmod.explain_tls_failure(pin_exc, host, cafile)) from pin_exc
+        except FixTLSError:
+            _close_quietly(pinned_sock)
+            raise
+        except Exception:
+            _close_quietly(pinned_sock)
+            raise
+        warnings.warn(tlsmod._PIN_WARNING, stacklevel=2)
+        print(
+            "TLS: public PKI rejected the reMarkets demo certificate "
+            "(expired Thawte leaf CN=www.primary.com.ar). "
+            "Accepted the pinned demo leaf.",
+            file=sys.stderr,
+        )
+        return wrapped
     except Exception:
-        sock.close()
+        _close_quietly(sock)
         raise
 
 
@@ -119,7 +174,7 @@ class FixMarketDataClient(object):
     def __init__(self, username, password, host=None, port=None, *,
                  sender_comp_id=None, target_comp_id="ROFX",
                  heartbeat_interval=30, use_tls=True, tls_verify=True,
-                 reconnect=False, reconnect_attempts=3,
+                 cafile=None, reconnect=False, reconnect_attempts=3,
                  connect_timeout=10, logon_timeout=15,
                  reset_seq_num=False, connector=None, clock=None, sleeper=None,
                  warn_outside_session_hours=True):
@@ -140,6 +195,9 @@ class FixMarketDataClient(object):
         self.heartbeat_interval = check_heartbeat(int(heartbeat_interval))
         self.use_tls = bool(use_tls)
         self.tls_verify = bool(tls_verify)
+        if cafile is not None and str(cafile).strip() == "":
+            raise ValueError("cafile is empty")
+        self.cafile = None if cafile is None else str(cafile)
         self.reconnect = bool(reconnect)
         self.reconnect_attempts = int(reconnect_attempts)
         self.connect_timeout = connect_timeout
@@ -296,7 +354,12 @@ class FixMarketDataClient(object):
 
     def _open_session(self):
         transport = self._connector(
-            self.host, self.port, self.use_tls, self.tls_verify, self.connect_timeout
+            self.host,
+            self.port,
+            self.use_tls,
+            self.tls_verify,
+            self.connect_timeout,
+            cafile=self.cafile,
         )
         self._session = FixMdSession(
             self.username,

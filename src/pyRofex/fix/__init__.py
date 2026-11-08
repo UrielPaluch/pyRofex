@@ -24,6 +24,7 @@ from .errors import (
     FixLogonError,
     FixMarketDataOnlyError,
     FixSessionError,
+    FixTLSError,
 )
 
 __all__ = [
@@ -33,6 +34,7 @@ __all__ = [
     "FixMarketDataClient",
     "FixMarketDataOnlyError",
     "FixSessionError",
+    "FixTLSError",
     "REMARKETS_FIX_HOST",
     "REMARKETS_FIX_PORT",
 ]

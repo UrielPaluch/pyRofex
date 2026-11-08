@@ -20,3 +20,11 @@ class FixSessionError(FixError):
 
 class FixConnectionError(FixError):
     """The TCP/TLS connection closed or could not be used."""
+
+
+class FixTLSError(FixConnectionError):
+    """The TLS handshake or certificate check failed.
+
+    This is not an output-file error. ``ssl.SSLError`` is an ``OSError``,
+    so callers must not report it as a failure to write the JSONL file.
+    """

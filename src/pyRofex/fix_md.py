@@ -15,11 +15,21 @@ time), ``raw`` (the FIX frame; SOH is U+0001), and ``parsed``.
 import argparse
 import json
 import os
+import ssl
 import sys
 
 from .fix.client import FixMarketDataClient
 from .fix.constants import REMARKETS_FIX_HOST, REMARKETS_FIX_PORT
-from .fix.errors import FixError
+from .fix.errors import FixError, FixTLSError
+
+
+class _OutputWriteError(Exception):
+    """The JSONL file could not be written. Not a TLS or socket error."""
+
+    def __init__(self, path, original):
+        super().__init__(path)
+        self.path = path
+        self.original = original
 
 
 def build_parser():
@@ -56,8 +66,12 @@ def build_parser():
                         help="Ask for a non-aggregated book (266=N)")
     parser.add_argument("--no-tls", action="store_true",
                         help="Plain TCP, for a local stunnel listener")
-    parser.add_argument("--insecure", action="store_true",
-                        help="TLS without certificate verification")
+    verify = parser.add_mutually_exclusive_group()
+    verify.add_argument("--insecure", action="store_true",
+                        help="TLS without certificate verification or the demo leaf pin")
+    verify.add_argument("--cafile", default=None,
+                        help="PEM CA bundle. Disables the reMarkets demo leaf pin. "
+                             "Default trust store is certifi.")
     parser.add_argument("--reset-seq-num", action="store_true",
                         help="Send Logon tag 141=Y. Not in the Primary ROE; off by default")
     parser.add_argument("--reconnect", action="store_true",
@@ -98,54 +112,75 @@ def main(argv=None, connector=None, clock=None, sleeper=None):
         heartbeat_interval=args.heartbeat,
         use_tls=not args.no_tls,
         tls_verify=not args.insecure,
+        cafile=args.cafile,
         reconnect=args.reconnect,
         reset_seq_num=args.reset_seq_num,
         connector=connector,
         clock=clock,
         sleeper=sleeper,
     )
-    counts = {"messages": 0, "W": 0, "X": 0, "Y": 0}
+    counts = {"messages": 0, "W": 0, "X": 0, "Y": 0, "h": 0}
+    endpoint = "{}:{}".format(client.host, client.port)
     exit_code = 0
     try:
-        with open(args.out, "w", encoding="utf-8", newline="\n") as handle:
-            def on_message(record, _handle=handle, _counts=counts):
-                _counts["messages"] += 1
-                msg_type = record.get("parsed", {}).get("msg_type")
-                if msg_type in _counts:
-                    _counts[msg_type] += 1
-                _handle.write(json.dumps(record, ensure_ascii=True))
-                _handle.write("\n")
-                _handle.flush()
-
-            client.on_message = on_message
-            try:
-                client.connect()
-                client.subscribe(
-                    args.symbol,
-                    entries,
-                    depth=args.depth,
-                    updates=not args.snapshot_only,
-                    aggregated=not args.no_aggregated,
-                )
-                client.run(args.seconds)
-            except FixError as exc:
-                print("FIX market data failed: {}".format(exc), file=sys.stderr)
-                exit_code = 1
-            except KeyboardInterrupt:
-                print("interrupted", file=sys.stderr)
-                exit_code = 130
-            finally:
-                # Logout while the file is still open so the peer Logout is recorded.
-                try:
-                    client.logout()
-                except Exception as exc:
-                    print("logout: {}".format(exc), file=sys.stderr)
+        handle = open(args.out, "w", encoding="utf-8", newline="\n")
     except OSError as exc:
         print("could not write {}: {}".format(args.out, exc), file=sys.stderr)
         return 1
+    try:
+        def on_message(record, _handle=handle, _counts=counts):
+            _counts["messages"] += 1
+            msg_type = record.get("parsed", {}).get("msg_type")
+            if msg_type in _counts:
+                _counts[msg_type] += 1
+            try:
+                _handle.write(json.dumps(record, ensure_ascii=True))
+                _handle.write("\n")
+                _handle.flush()
+            except OSError as exc:
+                raise _OutputWriteError(args.out, exc) from exc
+
+        client.on_message = on_message
+        try:
+            client.connect()
+            client.subscribe(
+                args.symbol,
+                entries,
+                depth=args.depth,
+                updates=not args.snapshot_only,
+                aggregated=not args.no_aggregated,
+            )
+            client.run(args.seconds)
+        except _OutputWriteError as exc:
+            print("could not write {}: {}".format(exc.path, exc.original), file=sys.stderr)
+            exit_code = 1
+        except FixTLSError as exc:
+            print("TLS error connecting to {}: {}".format(endpoint, exc), file=sys.stderr)
+            exit_code = 1
+        except ssl.SSLError as exc:
+            # SSLError is an OSError. Keep it out of the file-write message.
+            print("TLS error connecting to {}: {}".format(endpoint, exc), file=sys.stderr)
+            exit_code = 1
+        except FixError as exc:
+            print("FIX market data failed: {}".format(exc), file=sys.stderr)
+            exit_code = 1
+        except OSError as exc:
+            print("could not connect to {}: {}".format(endpoint, exc), file=sys.stderr)
+            exit_code = 1
+        except KeyboardInterrupt:
+            print("interrupted", file=sys.stderr)
+            exit_code = 130
+        finally:
+            # Logout while the file is still open so the peer Logout is recorded.
+            try:
+                client.logout()
+            except Exception as exc:
+                print("logout: {}".format(exc), file=sys.stderr)
+    finally:
+        handle.close()
     if exit_code == 0:
         print(
-            "wrote {messages} messages to {path} (W={W} X={X} Y={Y})".format(
+            "wrote {messages} messages to {path} (W={W} X={X} Y={Y} h={h})".format(
                 path=args.out, **counts
             ),
             file=sys.stderr,
