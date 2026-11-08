@@ -102,6 +102,7 @@ KNOWN_MESSAGE_TAGS = frozenset({
     55, 207, 262, 264, 268,
     98, 108, 112, 1137, 553, 554, 141,
     7, 16, 36, 123, 45, 58, 371, 372, 373,
+    37, 39, 54,  # Execution Report identity; 54 is not trade_side
     281,  # MDReqRejReason
 })
 

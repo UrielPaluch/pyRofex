@@ -363,6 +363,62 @@ class SessionTests(unittest.TestCase):
         ]
         self.assertEqual(echoed, ["TR1"])
 
+    def test_execution_report_does_not_set_trade_side(self):
+        # Live sequence: a snapshot with two trade entries, then an
+        # unsolicited Execution Report for the account order on that print.
+        client, exchange, _clock = _logged_on()
+        session = client._session
+        seen = []
+        session.on_message = seen.append
+        snapshot = [
+            (55, "DLR/NOV26"),
+            (207, "ROFX"),
+            (262, "md1"),
+            (268, "2"),
+            (269, "2"), (273, "17:35:33.974"), (277, "U"), (7201, "2"),
+            (269, "2"), (828, "0"),
+        ]
+        exchange.push(frame("W", snapshot, 2, "ROFX", "demo-user"))
+        exchange.push(frame(
+            "8",
+            [(37, "118697268"), (39, "2"), (54, "1")],
+            3,
+            "ROFX",
+            "demo-user",
+        ))
+        session.pump()
+        session.pump()
+
+        self.assertEqual([item["parsed"]["msg_type"] for item in seen], ["W", "8"])
+        trades = [
+            entry for entry in seen[0]["parsed"]["entries"]
+            if entry["md_entry_type"] == "2"
+        ]
+        self.assertEqual(len(trades), 2)
+        exchange_last, reported = trades
+        self.assertEqual(exchange_last["md_entry_time"], "17:35:33.974")
+        self.assertEqual(exchange_last["trade_condition"], "U")
+        self.assertEqual(exchange_last["trade_side"], "SELL")
+        self.assertIsNone(exchange_last["trd_type"])
+        self.assertTrue(any(
+            tag["tag"] == 7201 and tag["value"] == "2" for tag in exchange_last["tags"]
+        ))
+        self.assertIsNone(reported["trade_side"])
+        self.assertIsNone(reported["trade_condition"])
+        self.assertEqual(reported["trd_type"], "0")
+        self.assertFalse(any(tag["tag"] == 7201 for tag in reported["tags"]))
+        self.assertNotEqual(exchange_last["tags"], reported["tags"])
+
+        execution = seen[1]["parsed"]
+        self.assertTrue(execution["unsolicited"])
+        self.assertNotIn("trade_side", execution)
+        self.assertNotIn("entries", execution)
+        self.assertEqual(execution["order_id"], "118697268")
+        self.assertEqual(execution["ord_status"], "2")
+        self.assertEqual(execution["order_side"], "1")
+        self.assertIn({"tag": 54, "value": "1"}, execution["tags"])
+        self.assertEqual(seen[0]["parsed"]["entries"][0]["trade_side"], "SELL")
+
     def test_peer_logout_is_answered_once(self):
         client, exchange, _clock = _logged_on()
         exchange.push(frame("5", [(58, "session ended")], 2, "ROFX", "demo-user"))

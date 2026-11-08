@@ -3,8 +3,10 @@
 
 Every tag on the wire is kept, in order, as ``{"tag", "value"}``. Named
 fields are copies of tags the ROE defines. Tag 7201 is exposed as
-``trade_side`` with values ``BUY``, ``SELL``, or ``None``. A missing 7201
-stays ``None``. Bid/offer entry types and tag 54 are never used to fill it.
+``trade_side`` with values ``BUY``, ``SELL``, or ``None``, and only on a
+``269=2`` entry of a snapshot (``35=W``) or incremental (``35=X``). A missing
+7201 stays ``None``. Tag 54 on an Execution Report (``35=8``) is the account
+order side and is never copied into ``trade_side``.
 """
 
 from .constants import (
@@ -39,6 +41,16 @@ def parse_message(pairs):
             "md_req_id": _first(pairs, 262),
             "md_req_rej_reason": _first(pairs, 281),
             "text": _first(pairs, 58),
+            "unknown_tags": _message_unknowns(pairs, entry_spans=[]),
+        })
+    elif msg_type == "8":
+        # Unsolicited account execution report. Tag 54 stays the raw order
+        # side. It is not trade_side and there is no market-data entry list.
+        parsed.update({
+            "unsolicited": True,
+            "order_id": _first(pairs, 37),
+            "ord_status": _first(pairs, 39),
+            "order_side": _first(pairs, 54),
             "unknown_tags": _message_unknowns(pairs, entry_spans=[]),
         })
     else:
@@ -88,6 +100,8 @@ def _entry(group):
     """One repeating-group member. 7201 is the only source of trade_side."""
     side_raw = _first(group, 7201)
     entry_type = _first(group, 269)
+    # 7201 is meaningful on a trade entry (269=2). Anywhere else, including
+    # a bid or an Execution Report, it is not this field.
     return {
         "tags": [{"tag": tag, "value": value} for tag, value in group],
         "unknown_tags": [
@@ -109,7 +123,7 @@ def _entry(group):
         "md_update_action": _first(group, 279),
         "symbol": _first(group, 55),
         "security_exchange": _first(group, 207),
-        "trade_side": trade_side_from_value(side_raw),
+        "trade_side": trade_side_from_value(side_raw) if entry_type == "2" else None,
     }
 
 
